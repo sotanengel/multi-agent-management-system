@@ -1,0 +1,4 @@
+name: mams-test
+
+include:
+  - docker-compose.yml

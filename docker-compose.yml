@@ -1,0 +1,179 @@
+name: mams
+
+networks:
+  mams-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: mams
+      POSTGRES_USER: mams
+      POSTGRES_PASSWORD: mams_secret
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - mams-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mams -d mams"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  nats:
+    image: nats:2.10-alpine
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command: ["-js", "-m", "8222"]
+    networks:
+      - mams-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8222/healthz || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - mams-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  identity-service:
+    build:
+      context: .
+      dockerfile: packages/identity-service/Dockerfile
+    ports:
+      - "8001:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://mams:mams_secret@postgres:5432/mams
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-secret-change-in-production}
+      JWT_ALGORITHM: HS256
+      JWT_EXPIRE_MINUTES: "60"
+    networks:
+      - mams-network
+    profiles:
+      - services
+
+  policy-engine:
+    build:
+      context: .
+      dockerfile: packages/policy-engine/Dockerfile
+    ports:
+      - "8003:8000"
+    networks:
+      - mams-network
+    profiles:
+      - services
+
+  audit-service:
+    build:
+      context: .
+      dockerfile: packages/audit-service/Dockerfile
+    ports:
+      - "8008:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://mams:mams_secret@postgres:5432/mams
+      NATS_URL: nats://nats:4222
+    networks:
+      - mams-network
+    profiles:
+      - services
+
+  model-gateway:
+    build:
+      context: .
+      dockerfile: packages/model-gateway/Dockerfile
+    ports:
+      - "8006:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://mams:mams_secret@postgres:5432/mams
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+    networks:
+      - mams-network
+    profiles:
+      - services
+
+  lifecycle-manager:
+    build:
+      context: .
+      dockerfile: packages/lifecycle-manager/Dockerfile
+    ports:
+      - "8004:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://mams:mams_secret@postgres:5432/mams
+      POLICY_ENGINE_URL: http://policy-engine:8000
+      DOCKER_NETWORK: mams-mams-network
+      AGENT_RUNTIME_IMAGE: mams-agent-runtime:latest
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - mams-network
+    profiles:
+      - services
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: packages/api-gateway/Dockerfile
+    ports:
+      - "8000:8000"
+    depends_on:
+      nats:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      IDENTITY_SERVICE_URL: http://identity-service:8000
+      POLICY_ENGINE_URL: http://policy-engine:8000
+      LIFECYCLE_MANAGER_URL: http://lifecycle-manager:8000
+      AUDIT_SERVICE_URL: http://audit-service:8000
+      NATS_URL: nats://nats:4222
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-secret-change-in-production}
+      JWT_ALGORITHM: HS256
+    networks:
+      - mams-network
+    profiles:
+      - services
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    networks:
+      - mams-network
+    profiles:
+      - with-ollama
