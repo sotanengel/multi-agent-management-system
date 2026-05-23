@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -12,6 +12,7 @@ from mams_core.schemas.agent import (
     OperationRole,
     RoleBundle,
 )
+from mams_identity.dependencies import get_db
 from mams_identity.main import app
 from mams_identity.models import AgentRecord
 
@@ -66,19 +67,19 @@ async def test_register_agent(
     mock_session.get = AsyncMock(return_value=None)
     mock_session.add = MagicMock()
     mock_session.commit = AsyncMock()
-    mock_session.refresh = AsyncMock(side_effect=lambda r: r)
 
-    # Pre-set timestamps on the record to simulate DB assignment
-    sample_agent_record.created_at = datetime.now(timezone.utc)
-    sample_agent_record.updated_at = datetime.now(timezone.utc)
+    async def mock_refresh(r: AgentRecord) -> None:
+        r.created_at = datetime.now(timezone.utc)
+        r.updated_at = datetime.now(timezone.utc)
 
-    async def mock_get_session():  # type: ignore[return]
+    mock_session.refresh = AsyncMock(side_effect=mock_refresh)
+
+    async def mock_get_db():  # type: ignore[return]
         yield mock_session
 
-    with patch("mams_identity.routers.agents.get_db", mock_get_session):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+    app.dependency_overrides[get_db] = mock_get_db
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.post(
                 "/v1/agents",
                 json={
@@ -89,6 +90,8 @@ async def test_register_agent(
                     "depth": 0,
                 },
             )
+    finally:
+        app.dependency_overrides.clear()
 
     assert response.status_code == 201
     data = response.json()
@@ -104,14 +107,15 @@ async def test_get_agent_not_found(sample_agent_id: uuid.UUID) -> None:
     mock_result.scalar_one_or_none.return_value = None
     mock_session.execute = AsyncMock(return_value=mock_result)
 
-    async def mock_get_session():  # type: ignore[return]
+    async def mock_get_db():  # type: ignore[return]
         yield mock_session
 
-    with patch("mams_identity.routers.agents.get_db", mock_get_session):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+    app.dependency_overrides[get_db] = mock_get_db
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get(f"/v1/agents/{sample_agent_id}")
+    finally:
+        app.dependency_overrides.clear()
 
     assert response.status_code == 404
 
@@ -125,14 +129,15 @@ async def test_get_agent(
     mock_result.scalar_one_or_none.return_value = sample_agent_record
     mock_session.execute = AsyncMock(return_value=mock_result)
 
-    async def mock_get_session():  # type: ignore[return]
+    async def mock_get_db():  # type: ignore[return]
         yield mock_session
 
-    with patch("mams_identity.routers.agents.get_db", mock_get_session):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+    app.dependency_overrides[get_db] = mock_get_db
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get(f"/v1/agents/{sample_agent_id}")
+    finally:
+        app.dependency_overrides.clear()
 
     assert response.status_code == 200
     data = response.json()
@@ -149,17 +154,18 @@ async def test_issue_token(
     mock_result.scalar_one_or_none.return_value = sample_agent_record
     mock_session.execute = AsyncMock(return_value=mock_result)
 
-    async def mock_get_session():  # type: ignore[return]
+    async def mock_get_db():  # type: ignore[return]
         yield mock_session
 
-    with patch("mams_identity.routers.tokens.get_db", mock_get_session):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+    app.dependency_overrides[get_db] = mock_get_db
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.post(
                 "/v1/tokens",
                 json={"agent_id": str(sample_agent_id)},
             )
+    finally:
+        app.dependency_overrides.clear()
 
     assert response.status_code == 201
     data = response.json()
@@ -177,14 +183,15 @@ async def test_verify_token(sample_agent_id: uuid.UUID) -> None:
     mock_session = AsyncMock()
     mock_session.get = AsyncMock(return_value=None)
 
-    async def mock_get_session():  # type: ignore[return]
+    async def mock_get_db():  # type: ignore[return]
         yield mock_session
 
-    with patch("mams_identity.routers.tokens.get_db", mock_get_session):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+    app.dependency_overrides[get_db] = mock_get_db
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.post("/v1/tokens/verify", json={"token": token})
+    finally:
+        app.dependency_overrides.clear()
 
     assert response.status_code == 200
     data = response.json()
@@ -197,16 +204,17 @@ async def test_verify_token(sample_agent_id: uuid.UUID) -> None:
 async def test_verify_invalid_token() -> None:
     mock_session = AsyncMock()
 
-    async def mock_get_session():  # type: ignore[return]
+    async def mock_get_db():  # type: ignore[return]
         yield mock_session
 
-    with patch("mams_identity.routers.tokens.get_db", mock_get_session):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+    app.dependency_overrides[get_db] = mock_get_db
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.post(
                 "/v1/tokens/verify", json={"token": "not.a.valid.jwt"}
             )
+    finally:
+        app.dependency_overrides.clear()
 
     assert response.status_code == 200
     data = response.json()
@@ -226,14 +234,15 @@ async def test_revoke_token(sample_agent_id: uuid.UUID) -> None:
     mock_session.add = MagicMock()
     mock_session.commit = AsyncMock()
 
-    async def mock_get_session():  # type: ignore[return]
+    async def mock_get_db():  # type: ignore[return]
         yield mock_session
 
-    with patch("mams_identity.routers.tokens.get_db", mock_get_session):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+    app.dependency_overrides[get_db] = mock_get_db
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.post("/v1/tokens/revoke", json={"token": token})
+    finally:
+        app.dependency_overrides.clear()
 
     assert response.status_code == 204
 
@@ -249,14 +258,15 @@ async def test_delete_agent(
     mock_session.commit = AsyncMock()
     mock_session.refresh = AsyncMock(side_effect=lambda r: r)
 
-    async def mock_get_session():  # type: ignore[return]
+    async def mock_get_db():  # type: ignore[return]
         yield mock_session
 
-    with patch("mams_identity.routers.agents.get_db", mock_get_session):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+    app.dependency_overrides[get_db] = mock_get_db
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.delete(f"/v1/agents/{sample_agent_id}")
+    finally:
+        app.dependency_overrides.clear()
 
     assert response.status_code == 200
     data = response.json()
